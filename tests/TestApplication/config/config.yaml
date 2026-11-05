@@ -1,0 +1,13 @@
+imports:
+    - { resource: "@RefbergSyliusTpayPlugin/config/config.yaml" }
+    - { resource: "services_test.php" }
+
+when@test:
+    ux_icons:
+        iconify:
+            enabled: false
+    framework:
+        cache:
+            pools:
+                refberg_tpay.cache:
+                    adapter: cache.adapter.array

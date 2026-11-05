@@ -1,0 +1,14 @@
+refberg_tpay:
+    gateway_factory:
+        refberg_tpay: Tpay
+    form:
+        gateway_configuration:
+            environment: Środowisko
+            environment_sandbox: Sandbox (openapi.sandbox.tpay.com)
+            environment_production: Produkcja (api.tpay.com)
+            merchant_id: ID sprzedawcy
+            client_id: Klucz API (client ID)
+            client_secret: Hasło klucza API (client secret)
+            security_code: Kod bezpieczeństwa powiadomień
+            secret_help: Przechowywany w postaci zaszyfrowanej. Zostaw puste, aby nie zmieniać obecnej wartości.
+            notify_url: 'Adres powiadomień (przekazywany przy każdej transakcji; wymaga opcji „Zezwalaj na nadpisanie” w panelu Tpay):'

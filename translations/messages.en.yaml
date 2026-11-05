@@ -1,0 +1,14 @@
+refberg_tpay:
+    gateway_factory:
+        refberg_tpay: Tpay
+    form:
+        gateway_configuration:
+            environment: Environment
+            environment_sandbox: Sandbox (openapi.sandbox.tpay.com)
+            environment_production: Production (api.tpay.com)
+            merchant_id: Merchant ID
+            client_id: OpenAPI client ID
+            client_secret: OpenAPI client secret
+            security_code: Notification security code
+            secret_help: Stored encrypted. Leave empty to keep the current value.
+            notify_url: 'Notification URL (sent with every transaction; requires "Allow override" in the Tpay merchant panel):'
