@@ -25,7 +25,7 @@ final readonly class PaymentSynchronizer implements PaymentSynchronizerInterface
     {
         $transaction = $this->client->getTransaction($credentials, $transactionId);
 
-        $errors = $this->validator->validate($transaction, $payment);
+        $errors = $this->validator->validate($transaction, $payment, $credentials);
         if ([] !== $errors) {
             $this->logger->error('Tpay transaction does not match the Sylius payment; state not changed.', [
                 'payment_id' => $payment->getId(),

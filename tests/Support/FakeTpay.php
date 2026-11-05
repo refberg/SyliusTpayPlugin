@@ -15,7 +15,6 @@ use function array_key_last;
 use function array_keys;
 use function array_map;
 use function array_merge;
-use function array_shift;
 use function array_values;
 use function base64_encode;
 use function count;
@@ -89,7 +88,7 @@ final class FakeTpay
     /** @var list<array{method: string, path: string, body: string, headers: array<string, string>}> */
     private array $requests = [];
 
-    /** @var list<array{int, array<string, mixed>}> */
+    /** @var list<array{int, array<string, mixed>, string|null}> */
     private array $queuedFailures = [];
 
     /** @var array<string, true> */
@@ -138,10 +137,13 @@ final class FakeTpay
             return self::json(401, ['result' => 'failed', 'errors' => [['errorCode' => 'unauthorized']]]);
         }
 
-        if ([] !== $this->queuedFailures) {
-            [$status, $data] = array_shift($this->queuedFailures);
+        foreach ($this->queuedFailures as $index => [$status, $data, $failedMethod]) {
+            if (null === $failedMethod || $failedMethod === $method) {
+                unset($this->queuedFailures[$index]);
+                $this->queuedFailures = array_values($this->queuedFailures);
 
-            return self::json($status, $data);
+                return self::json($status, $data);
+            }
         }
 
         if ('POST' === $method && '/transactions' === $path) {
@@ -204,9 +206,12 @@ final class FakeTpay
         $this->refunds[$refundId]['status'] = $status;
     }
 
-    public function failNextRequest(int $httpStatus, string $errorCode = 'internal_error'): void
+    /**
+     * Fails the next API request, or the next one with the given HTTP method.
+     */
+    public function failNextRequest(int $httpStatus, string $errorCode = 'internal_error', ?string $method = null): void
     {
-        $this->queuedFailures[] = [$httpStatus, ['result' => 'failed', 'requestId' => 'fake', 'errors' => [['errorCode' => $errorCode, 'errorMessage' => 'Simulated failure']]]];
+        $this->queuedFailures[] = [$httpStatus, ['result' => 'failed', 'requestId' => 'fake', 'errors' => [['errorCode' => $errorCode, 'errorMessage' => 'Simulated failure']]], $method];
     }
 
     public function makeCertificatesUnavailable(): void

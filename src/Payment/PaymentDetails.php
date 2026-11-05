@@ -17,7 +17,7 @@ use function is_string;
  * Typed access to the Tpay data stored in Payment::$details[TpayGateway::DETAILS_KEY].
  *
  * Shape:
- *   transactions:             map transactionId => {title, ext_order_id, status, amount, currency}
+ *   transactions:             map transactionId => {title, ext_order_id, merchant_id, status, amount, currency}
  *   current_transaction_id:   Tpay transaction created most recently for this payment
  *   completed_transaction_id: Tpay transaction that completed this payment
  *   refunds:                  map key => {refund_id, status, amount, currency, external}
@@ -69,12 +69,13 @@ final class PaymentDetails
         $this->payment->setDetails($details);
     }
 
-    public function addTransaction(string $transactionId, string $title, string $extOrderId, int $amount, string $currency): void
+    public function addTransaction(string $transactionId, string $title, string $extOrderId, string $merchantId, int $amount, string $currency): void
     {
         $transactions = $this->transactions();
         $transactions[$transactionId] = [
             'title' => $title,
             'ext_order_id' => $extOrderId,
+            'merchant_id' => $merchantId,
             'status' => TpayTransaction::STATUS_PENDING,
             'amount' => $amount,
             'currency' => $currency,
@@ -110,6 +111,14 @@ final class PaymentDetails
     public function getExtOrderId(string $transactionId): ?string
     {
         return self::stringValue($this->transactions()[$transactionId]['ext_order_id'] ?? null);
+    }
+
+    /**
+     * Tpay merchant whose credentials created the transaction.
+     */
+    public function getMerchantId(string $transactionId): ?string
+    {
+        return self::stringValue($this->transactions()[$transactionId]['merchant_id'] ?? null);
     }
 
     public function getTransactionStatus(string $transactionId): ?string

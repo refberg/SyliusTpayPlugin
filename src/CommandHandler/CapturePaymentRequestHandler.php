@@ -82,7 +82,7 @@ final readonly class CapturePaymentRequestHandler
         }
 
         $details = PaymentDetails::of($payment);
-        $details->addTransaction($created->transactionId, $created->title, $extOrderId, (int) $payment->getAmount(), (string) $payment->getCurrencyCode());
+        $details->addTransaction($created->transactionId, $created->title, $extOrderId, $credentials->merchantId, (int) $payment->getAmount(), (string) $payment->getCurrencyCode());
         $details->save();
 
         $paymentRequest->setResponseData([
