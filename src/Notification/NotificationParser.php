@@ -9,6 +9,7 @@ use Refberg\SyliusTpayPlugin\Config\TpayCredentials;
 use Refberg\SyliusTpayPlugin\Signature\ChecksumVerifierInterface;
 use Refberg\SyliusTpayPlugin\Signature\JwsVerifierInterface;
 use function hash_equals;
+use function in_array;
 use function is_array;
 use function is_string;
 use function parse_str;
@@ -59,7 +60,7 @@ final readonly class NotificationParser implements NotificationParserInterface
         $crc = Json::string($fields, 'tr_crc');
         $status = strtoupper(Json::string($fields, 'tr_status') ?? '');
         $type = self::TYPES[$status] ?? null;
-        if (null === $title || null === $crc || null === $type) {
+        if (in_array(null, [$title, $crc, $type], true)) {
             return null;
         }
 

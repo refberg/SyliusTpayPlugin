@@ -29,6 +29,7 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
 
         $transactionId = $this->tpay->lastTransactionId();
         $transaction = $this->tpay->transaction($transactionId);
+        self::assertIsString($transaction['title']);
         self::assertSame('https://secure.sandbox.tpay.com/?title=' . $transaction['title'] . '&uid=fake', $redirect);
 
         $request = $transaction['request'];
@@ -39,11 +40,11 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         self::assertSame(['email' => 'buyer@example.com', 'name' => 'buyer@example.com', 'ip' => '10.0.0.1'], $request['payer']);
         self::assertSame('en', $request['lang']);
         self::assertSame('http://localhost/payment-methods/TPAY', self::at($request, 'callbacks', 'notification', 'url'));
-        self::assertMatchesRegularExpression('#^http://localhost/en_US/order/after-pay/[0-9a-f-]{36}\?tpay_return=success$#', self::at($request, 'callbacks', 'payerUrls', 'success'));
-        self::assertMatchesRegularExpression('#^http://localhost/en_US/order/after-pay/[0-9a-f-]{36}\?tpay_return=error$#', self::at($request, 'callbacks', 'payerUrls', 'error'));
+        self::assertMatchesRegularExpression('#^http://localhost/en_US/order/after-pay/[0-9a-f-]{36}\?tpay_return=success$#', self::string(self::at($request, 'callbacks', 'payerUrls', 'success')));
+        self::assertMatchesRegularExpression('#^http://localhost/en_US/order/after-pay/[0-9a-f-]{36}\?tpay_return=error$#', self::string(self::at($request, 'callbacks', 'payerUrls', 'error')));
         $paymentId = $payment->getId();
         self::assertIsInt($paymentId);
-        self::assertMatchesRegularExpression('#^000000001-' . $paymentId . '-[0-9a-f]{12}$#', $request['hiddenDescription']);
+        self::assertMatchesRegularExpression('#^000000001-' . $paymentId . '-[0-9a-f]{12}$#', self::string($request['hiddenDescription']));
 
         self::assertSame('new', $this->reloadPayment($payment)->getState());
         self::assertSame($transactionId, $this->details($payment)->getCurrentTransactionId());

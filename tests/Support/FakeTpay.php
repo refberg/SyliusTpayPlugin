@@ -15,6 +15,7 @@ use function array_key_last;
 use function array_keys;
 use function array_map;
 use function array_merge;
+use function array_splice;
 use function array_values;
 use function base64_encode;
 use function count;
@@ -139,8 +140,7 @@ final class FakeTpay
 
         foreach ($this->queuedFailures as $index => [$status, $data, $failedMethod]) {
             if (null === $failedMethod || $failedMethod === $method) {
-                unset($this->queuedFailures[$index]);
-                $this->queuedFailures = array_values($this->queuedFailures);
+                array_splice($this->queuedFailures, $index, 1);
 
                 return self::json($status, $data);
             }
@@ -231,7 +231,7 @@ final class FakeTpay
     {
         $last = array_key_last($this->transactions);
 
-        return null !== $last ? $last : throw new LogicException('No Tpay transaction has been created.');
+        return $last ?? throw new LogicException('No Tpay transaction has been created.');
     }
 
     /**
@@ -308,7 +308,7 @@ final class FakeTpay
     public static function foreignKey(): OpenSSLAsymmetricKey
     {
         $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
-        if (false === $key) {
+        if (!$key instanceof OpenSSLAsymmetricKey) {
             throw new LogicException('Could not generate a key.');
         }
 
@@ -336,12 +336,15 @@ final class FakeTpay
 
         $rootKey = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
         $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
-        if (false === $rootKey || false === $key) {
+        if (!$rootKey instanceof OpenSSLAsymmetricKey || !$key instanceof OpenSSLAsymmetricKey) {
             throw new LogicException('Could not generate test keys.');
         }
 
-        $rootCsr = openssl_csr_new(['commonName' => 'Fake Tpay JWS Root CA'], $rootKey);
-        $csr = openssl_csr_new(['commonName' => 'Fake Tpay notifications'], $key);
+        // openssl_csr_new() takes the key by reference; copies keep the typed variables intact.
+        $rootKeyReference = $rootKey;
+        $keyReference = $key;
+        $rootCsr = openssl_csr_new(['commonName' => 'Fake Tpay JWS Root CA'], $rootKeyReference);
+        $csr = openssl_csr_new(['commonName' => 'Fake Tpay notifications'], $keyReference);
         if (false === $rootCsr || true === $rootCsr || false === $csr || true === $csr) {
             throw new LogicException('Could not create test certificate requests.');
         }

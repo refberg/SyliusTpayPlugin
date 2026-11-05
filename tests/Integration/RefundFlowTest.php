@@ -49,7 +49,7 @@ final class RefundFlowTest extends IntegrationTestCase
         $payment = $this->paidPayment();
         $transactionId = $this->tpay->lastTransactionId();
         $this->refundInAdmin($payment);
-        $this->tpay->setRefundStatus((string) $this->tpay->refunds($transactionId)[0]['refundId'], 'done');
+        $this->tpay->setRefundStatus(self::string($this->tpay->refunds($transactionId)[0]['refundId']), 'done');
 
         // Duplicate delivery included.
         self::assertSame(Response::HTTP_OK, $this->notifyTransaction($transactionId, 'CHARGEBACK')->getStatusCode());
@@ -68,7 +68,7 @@ final class RefundFlowTest extends IntegrationTestCase
         $payment = $this->paidPayment();
         $transactionId = $this->tpay->lastTransactionId();
         $this->refundInAdmin($payment);
-        $this->tpay->setRefundStatus((string) $this->tpay->refunds($transactionId)[0]['refundId'], 'cancel');
+        $this->tpay->setRefundStatus(self::string($this->tpay->refunds($transactionId)[0]['refundId']), 'cancel');
 
         self::assertSame(Response::HTTP_OK, $this->notifyTransaction($transactionId, 'CHARGEBACK')->getStatusCode());
 

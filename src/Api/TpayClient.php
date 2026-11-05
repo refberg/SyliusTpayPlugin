@@ -18,6 +18,7 @@ use Symfony\Contracts\HttpClient\Exception\ExceptionInterface as HttpClientExcep
 use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use function count;
+use function in_array;
 use function is_array;
 use function is_int;
 use function json_encode;
@@ -62,7 +63,7 @@ final readonly class TpayClient implements TpayClientInterface
         $transactionId = Json::string($data, 'transactionId');
         $title = Json::string($data, 'title');
         $paymentUrl = Json::string($data, 'transactionPaymentUrl');
-        if (null === $transactionId || null === $title || null === $paymentUrl || !str_starts_with($paymentUrl, 'https://')) {
+        if (in_array(null, [$transactionId, $title, $paymentUrl], true) || !str_starts_with($paymentUrl, 'https://')) {
             throw new TpayApiException('Tpay transaction response is missing transactionId, title or transactionPaymentUrl.', $statusCode);
         }
 
@@ -88,7 +89,7 @@ final readonly class TpayClient implements TpayClientInterface
         $status = Json::string($data, 'status');
         $amount = Json::amount($data, 'amount');
         $currency = Json::string($data, 'currency');
-        if (null === $id || null === $title || null === $status || null === $amount || null === $currency) {
+        if (in_array(null, [$id, $title, $status, $amount, $currency], true)) {
             throw new TpayApiException('Tpay transaction response is incomplete.', $statusCode);
         }
 
@@ -191,7 +192,7 @@ final readonly class TpayClient implements TpayClientInterface
                 $status = Json::string($item, 'status') ?? $defaultStatus;
                 $amount = Json::amount($item, 'amount');
                 $currency = Json::string($item, 'currency');
-                if (null === $refundId || null === $status || null === $amount || null === $currency) {
+                if (in_array(null, [$refundId, $status, $amount, $currency], true)) {
                     continue;
                 }
 

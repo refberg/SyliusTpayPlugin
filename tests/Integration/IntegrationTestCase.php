@@ -26,8 +26,8 @@ use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 use Sylius\Resource\Factory\FactoryInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Cache\Adapter\AdapterInterface;
 use Symfony\Component\HttpFoundation\Response;
-use Symfony\Contracts\Cache\CacheInterface;
 use Tests\Refberg\SyliusTpayPlugin\Support\FakeTpay;
 use function is_array;
 use function json_decode;
@@ -56,7 +56,7 @@ abstract class IntegrationTestCase extends WebTestCase
         $this->client->disableReboot();
 
         $this->tpay = self::service(FakeTpay::class, FakeTpay::class);
-        self::service(CacheInterface::class, 'refberg_tpay.cache')->clear();
+        self::service(AdapterInterface::class, 'refberg_tpay.cache')->clear();
 
         $connection = $this->em()->getConnection();
         $connection->executeStatement('SET FOREIGN_KEY_CHECKS = 0');
@@ -302,6 +302,13 @@ abstract class IntegrationTestCase extends WebTestCase
             self::assertArrayHasKey($key, $value);
             $value = $value[$key];
         }
+
+        return $value;
+    }
+
+    protected static function string(mixed $value): string
+    {
+        self::assertIsString($value);
 
         return $value;
     }
