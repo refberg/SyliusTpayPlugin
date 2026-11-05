@@ -26,6 +26,14 @@ final class SandboxEnvironment
     }
 
     /**
+     * Tests that wait for a person to pay or reject the transaction on the sandbox payment page.
+     */
+    public static function isManual(): bool
+    {
+        return self::isEnabled() && '1' === self::value('TPAY_SANDBOX_MANUAL');
+    }
+
+    /**
      * @return array<string, string>|null
      */
     public static function credentials(): ?array
