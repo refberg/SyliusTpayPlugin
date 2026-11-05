@@ -1,0 +1,3 @@
+refberg_tpay:
+    merchant_id:
+        invalid: ID sprzedawcy może zawierać tylko cyfry.
