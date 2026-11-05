@@ -67,6 +67,7 @@ final class JwsVerifierTest extends TestCase
     #[TestWith(['https://secure.sandbox.tpay.com:8443/x509/notifications-jws.pem'])]
     #[TestWith(['https://secure.sandbox.tpay.com/x509/../uploads/key.pem'])]
     #[TestWith(['https://secure.sandbox.tpay.com/other/notifications-jws.pem'])]
+    #[TestWith(['https://secure-sandbox.tpay.com/x509/notifications-jws.pem'])]
     public function test_certificate_url_outside_the_tpay_certificate_path_is_never_downloaded(string $url): void
     {
         $certificates = $this->createMock(CertificateProviderInterface::class);
