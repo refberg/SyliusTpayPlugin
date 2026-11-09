@@ -205,6 +205,9 @@ $paymentMethodRepository->add($paymentMethod);
    na podstawie transakcji odczytanej z API Tpay.
 
 Ponowne otwarcie strony płatności używa transakcji Tpay, która jest w toku, zamiast tworzyć nową.
+Gdy notyfikacja albo sprawdzenie statusu wykaże, że ta transakcja Tpay została opłacona (także gdy już ją zwrócono) lub anulowana, jej payment
+request capture zostaje zakończony albo oznaczony jako nieudany, więc **Zapłać** tworzy nową transakcję Tpay,
+zamiast kierować klienta do zakończonej.
 
 ### API
 
@@ -244,15 +247,40 @@ Content-Type: application/ld+json
 | `pending`                | bez zmian (`new`)                                                               |
 | `paid`, `correct`        | `completed`, jeden raz                                                          |
 | `refund` (pełny zwrot)   | `refunded`, gdy to ta transakcja opłaciła płatność                              |
-| `canceled`               | `failed`, tylko gdy żadna inna transakcja Tpay tej płatności nie oczekuje       |
+| `canceled`               | `failed`, tylko gdy żadna inna transakcja Tpay tej płatności nie oczekuje, a płatność nadal ma metodę Tpay; nigdy, gdy payment request capture tej transakcji został anulowany (zmiana metody) |
 
 Zakończona płatność nigdy nie wraca do wcześniejszego stanu. Gdy druga transakcja Tpay tej samej płatności zostanie
 opłacona (np. po ponownej próbie klienta w innej karcie), zamówienie Syliusa nie jest opłacane drugi raz. Plugin
-zapisuje ostrzeżenie w szczegółach płatności (`refberg_tpay.warnings`) i loguje błąd na kanale `tpay`.
-Zwróć tę transakcję ręcznie w panelu Tpay.
+zapisuje ostrzeżenie w szczegółach płatności (`refberg_tpay.warnings`) i loguje komunikat krytyczny (`critical`)
+na kanale `tpay`. Tak samo jest z transakcją Tpay opłaconą po tym, jak płatność w Syliusie stała się nieudana
+albo została anulowana (ostrzeżenie `payment_completed_after_failure`). Taką transakcję zwróć ręcznie w panelu Tpay.
+
+Gdy klient zmieni metodę płatności, a transakcja Tpay ma jeszcze status `pending`, Sylius anuluje payment request
+capture, a plugin prosi Tpay o anulowanie tej transakcji (`POST /transactions/{transactionId}/cancel`). Odpowiedź
+trafia tylko do logu: plugin robi to wewnątrz flusha Doctrine zmiany metody i niczego tam nie zapisuje, więc status
+transakcji zmienia dopiero notyfikacja albo sprawdzenie statusu. Transakcja `canceled` nie oznacza jako nieudanej
+płatności, która ma już inną metodę, także inną metodę Tpay albo tę samą metodę Tpay po powrocie do niej,
+bo payment request capture tej transakcji został anulowany przy zmianie metody.
+
+Tpay ma jeden status, `pending`, dla transakcji dopiero utworzonej i dla takiej, którą klient właśnie opłaca
+(np. przelew jeszcze niezaksięgowany), więc plugin nie blokuje zmiany metody. Według
+[dokumentacji Tpay](https://docs-api.tpay.com/transaction-cancellation/) anulować można tylko transakcję `pending`,
+płatnik nie opłaci anulowanej transakcji, a jeśli płatność mimo to przejdzie, Tpay sam zwraca środki płatnikowi.
+Są więc dwa przypadki:
+
+- Płatność jest już zaksięgowana w Tpay: Tpay odmawia anulowania, a płatność kończy notyfikacja.
+  Odmowa (HTTP 4xx inny niż 401, 403, 408 i 429; testy zakładają 409) nie dowodzi płatności: transakcja mogła też
+  być już anulowana albo wygasła (Tpay anuluje nieopłacone transakcje po 30 dniach), a HTTP 404 może też oznaczać
+  transakcję innego konta Tpay. Każda odmowa trafia do logu jako komunikat krytyczny; sprawdź transakcję w panelu Tpay.
+- Przelew jest jeszcze w drodze: anulowanie się udaje, a Tpay zwraca środki płatnikowi.
+
+Jeśli klient opłaci i transakcję Tpay, i nową metodę, transakcja Tpay dostaje ostrzeżenie
+`payment_completed_after_failure` albo `paid_with_previous_payment_method` (patrz wyżej); nadmiarową płatność trzeba
+zwrócić ręcznie.
 
 Gdy klient po przekierowaniu do Tpay zmieni metodę płatności zamówienia, transakcja Tpay utworzona przed zmianą
-pozostaje powiązana z płatnością i nadal można ją opłacić. Płatność kończy jej notyfikacja albo sprawdzenie statusu
+pozostaje powiązana z płatnością. Można ją opłacić tylko wtedy, gdy nie została anulowana: w chwili zmiany nie miała
+lokalnie statusu `pending` (więc plugin nie prosił Tpay o anulowanie) albo Tpay jej nie anulował. Płatność kończy jej notyfikacja albo sprawdzenie statusu
 (powrót klienta z Tpay albo payment request `status` przez API), gdy API Tpay potwierdzi zapłatę; plugin przywraca
 metodę płatności Tpay, która została opłacona, zapisuje ostrzeżenie `paid_with_previous_payment_method` i loguje
 ostrzeżenie. Dzięki temu zwroty tej płatności z Syliusa trafiają do Tpay.
@@ -262,7 +290,8 @@ nie dotrzeć do tej transakcji:
 
 - Inna metoda Tpay: anulowanie jest wysyłane z danymi nowej metody. Dla transakcji innego sprzedawcy Tpay powinien
   odmówić; payment request kończy się wtedy błędem, a plugin loguje błąd.
-- Metoda spoza Tpay: anulowanie nie trafia do Tpay. Stara transakcja dalej oczekuje; jeśli klient ją opłaci,
+- Metoda spoza Tpay: anulowanie nie trafia do Tpay. Stara transakcja dalej oczekuje, chyba że została anulowana
+  przy zmianie metody (patrz wyżej); jeśli klient ją opłaci,
   płatność pozostaje anulowana i dostaje ostrzeżenie `payment_completed_after_failure`.
 
 W obu przypadkach zwróć albo anuluj transakcję w panelu Tpay.
@@ -352,7 +381,7 @@ przez `tests/Sandbox` przed uruchomieniem produkcyjnym.
 | `GET /transactions/{transactionId}` przyjmuje ID transakcji zwrócone przy tworzeniu; notyfikacje wskazują transakcję po tytule (`tr_id`). | `TpayClient`, `NotifyPaymentRequestHandler` |
 | Status zwrotu inny niż `done`, `authorized`, `blik_processed` (zakończony) albo `cancel`, `declined` (anulowany) oznacza zwrot w toku. Zwroty bez statusu (brak konta bankowego, karty) są w toku. | `TpayRefund`, `TpayClient` |
 | `tr_status` to `TRUE` (albo `PAID`) dla płatności i `CHARGEBACK` dla pełnego zwrotu; zwroty częściowe nie wysyłają notyfikacji. | `NotificationParser` |
-| Po zmianie metody płatności w Syliusie stara transakcja Tpay nadal przyjmuje wpłatę. | `ShopPaymentFlowTest` |
+| Po zmianie metody płatności w Syliusie stara transakcja Tpay nadal przyjmuje wpłatę, chyba że zostanie anulowana. `POST /transactions/{transactionId}/cancel` anuluje tylko transakcję `pending`, a opłaconej odmawia (testy zakładają HTTP 409). Anulowanej transakcji nie da się opłacić, a płatność, która mimo to przejdzie, Tpay zwraca płatnikowi. Nie sprawdzono na sandboxie. | `ShopPaymentFlowTest`, `CaptureCancelledListener`, `FakeTpay` |
 | Transakcja w walucie innej niż PLN jest odrzucana bez umowy na wiele walut. | `FakeTpay` |
 
 ## Rozszerzanie

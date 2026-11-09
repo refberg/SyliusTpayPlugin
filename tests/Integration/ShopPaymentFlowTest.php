@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Refberg\SyliusTpayPlugin\Integration;
 
+use Doctrine\Persistence\ObjectRepository;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\TestWith;
 use Refberg\SyliusTpayPlugin\Payment\PaymentDetails;
@@ -398,12 +399,13 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
 
     #[TestWith(['notification'])]
     #[TestWith(['return'])]
-    public function test_pending_transaction_after_the_customer_switched_payment_method_keeps_the_new_method(string $checkedBy): void
+    public function test_transaction_cancelled_at_the_payment_method_switch_keeps_the_payment_new_with_the_new_method(string $checkedBy): void
     {
         $payment = $this->createPlacedOrder();
         $this->payInShop();
         $transactionId = $this->tpay->lastTransactionId();
         $this->switchToBankTransfer($payment);
+        self::assertSame('canceled', $this->tpay->transaction($transactionId)['status']);
 
         if ('notification' === $checkedBy) {
             self::assertSame(Response::HTTP_OK, $this->notifyTransaction($transactionId)->getStatusCode());
@@ -415,7 +417,63 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
         $payment = $this->reloadPayment($payment);
         self::assertSame('new', $payment->getState());
         self::assertSame('BANK_TRANSFER', $payment->getMethod()?->getCode());
+        self::assertSame('canceled', PaymentDetails::of($payment)->getTransactionStatus($transactionId));
         self::assertSame([], PaymentDetails::of($payment)->warnings());
+    }
+
+    #[TestWith(['notification'])]
+    #[TestWith(['return'])]
+    public function test_transaction_cancelled_at_a_switch_to_another_tpay_method_keeps_the_payment_new(string $checkedBy): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $transactionId = $this->tpay->lastTransactionId();
+        $payment = $this->reloadPayment($payment);
+        $payment->setMethod($this->createTpayMethod('TPAY2'));
+        $this->em()->flush();
+        self::assertSame('canceled', $this->tpay->transaction($transactionId)['status']);
+
+        if ('notification' === $checkedBy) {
+            self::assertSame(Response::HTTP_OK, $this->notifyTransaction($transactionId)->getStatusCode());
+        } else {
+            $this->client->request('GET', $this->returnUrl($transactionId));
+            self::assertTrue($this->client->getResponse()->isRedirect());
+        }
+
+        $payment = $this->reloadPayment($payment);
+        self::assertSame('new', $payment->getState());
+        self::assertSame('TPAY2', $payment->getMethod()?->getCode());
+        self::assertSame('canceled', PaymentDetails::of($payment)->getTransactionStatus($transactionId));
+    }
+
+    #[TestWith(['notification'])]
+    #[TestWith(['return'])]
+    public function test_transaction_cancelled_at_a_switch_away_and_back_to_tpay_keeps_the_payment_new(string $checkedBy): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $transactionId = $this->tpay->lastTransactionId();
+        $this->switchToBankTransfer($payment);
+        self::assertSame('canceled', $this->tpay->transaction($transactionId)['status']);
+
+        $payment = $this->reloadPayment($payment);
+        $tpayMethod = self::service(ObjectRepository::class, 'sylius.repository.payment_method')->findOneBy(['code' => self::METHOD_CODE]);
+        self::assertInstanceOf(PaymentMethodInterface::class, $tpayMethod);
+        $payment->setMethod($tpayMethod);
+        $this->em()->flush();
+
+        if ('notification' === $checkedBy) {
+            self::assertSame(Response::HTTP_OK, $this->notifyTransaction($transactionId)->getStatusCode());
+        } else {
+            $this->client->request('GET', $this->returnUrl($transactionId));
+            self::assertTrue($this->client->getResponse()->isRedirect());
+        }
+
+        $payment = $this->reloadPayment($payment);
+        self::assertSame('new', $payment->getState());
+        self::assertSame(self::METHOD_CODE, $payment->getMethod()?->getCode());
+        self::assertSame('canceled', PaymentDetails::of($payment)->getTransactionStatus($transactionId));
+        self::assertCount(1, $this->tpay->transactionIds());
     }
 
     public function test_notification_for_another_tpay_method_never_pays_the_payment(): void
@@ -447,6 +505,88 @@ final class ShopPaymentFlowTest extends IntegrationTestCase
 
         self::assertSame(Response::HTTP_OK, $this->notify($reordered)->getStatusCode());
         self::assertSame('completed', $this->reloadPayment($payment)->getState());
+    }
+
+    #[TestWith(['notification'])]
+    #[TestWith(['return'])]
+    public function test_capture_request_is_completed_when_tpay_receives_the_payment(string $confirmedBy): void
+    {
+        $this->createPlacedOrder();
+        $this->payInShop();
+        $transactionId = $this->tpay->lastTransactionId();
+        $this->tpay->setTransactionStatus($transactionId, 'correct');
+
+        if ('notification' === $confirmedBy) {
+            self::assertSame(Response::HTTP_OK, $this->notifyTransaction($transactionId)->getStatusCode());
+        } else {
+            $this->client->request('GET', $this->returnUrl($transactionId));
+            self::assertTrue($this->client->getResponse()->isRedirect());
+        }
+
+        $captures = $this->paymentRequests(PaymentRequestInterface::ACTION_CAPTURE);
+        self::assertCount(1, $captures);
+        self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $captures[0]->getState());
+        self::assertSame($transactionId, $captures[0]->getResponseData()['transaction_id'] ?? null);
+    }
+
+    public function test_paying_again_after_tpay_canceled_the_transaction_creates_a_new_tpay_transaction(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $firstTransactionId = $this->tpay->lastTransactionId();
+        $this->finalizeCaptureRequests(PaymentRequestTransitions::TRANSITION_FAIL);
+        $this->payInShop();
+        $canceledTransactionId = $this->tpay->lastTransactionId();
+
+        // The first Tpay transaction is still pending, so the payment stays new.
+        $this->tpay->setTransactionStatus($canceledTransactionId, 'canceled');
+        self::assertSame(Response::HTTP_OK, $this->notifyTransaction($canceledTransactionId)->getStatusCode());
+        self::assertSame('new', $this->reloadPayment($payment)->getState());
+        foreach ($this->paymentRequests(PaymentRequestInterface::ACTION_CAPTURE) as $capture) {
+            self::assertSame(PaymentRequestInterface::STATE_FAILED, $capture->getState());
+        }
+
+        $redirect = $this->payInShop();
+
+        $newTransactionId = $this->tpay->lastTransactionId();
+        self::assertNotContains($newTransactionId, [$firstTransactionId, $canceledTransactionId]);
+        self::assertSame('https://secure.sandbox.tpay.com/?title=' . self::string($this->tpay->transaction($newTransactionId)['title']) . '&uid=fake', $redirect);
+    }
+
+    public function test_switching_payment_method_asks_tpay_to_cancel_the_pending_transaction_without_recording_it(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $transactionId = $this->tpay->lastTransactionId();
+
+        $this->switchToBankTransfer($payment);
+
+        self::assertCount(1, $this->tpay->requests('POST', '#^/transactions/' . $transactionId . '/cancel$#'));
+        self::assertSame('canceled', $this->tpay->transaction($transactionId)['status']);
+        self::assertSame('pending', $this->details($payment)->getTransactionStatus($transactionId));
+        self::assertSame(PaymentRequestInterface::STATE_CANCELLED, $this->paymentRequests(PaymentRequestInterface::ACTION_CAPTURE)[0]->getState());
+        self::assertSame('new', $this->reloadPayment($payment)->getState());
+    }
+
+    public function test_tpay_error_while_cancelling_the_pending_transaction_does_not_block_the_payment_method_switch(): void
+    {
+        $payment = $this->createPlacedOrder();
+        $this->payInShop();
+        $transactionId = $this->tpay->lastTransactionId();
+        $captureResponse = $this->paymentRequests(PaymentRequestInterface::ACTION_CAPTURE)[0]->getResponseData();
+        $this->tpay->failNextRequest(503);
+
+        $this->switchToBankTransfer($payment);
+
+        self::assertCount(1, $this->tpay->requests('POST', '#^/transactions/' . $transactionId . '/cancel$#'));
+        $payment = $this->reloadPayment($payment);
+        self::assertSame('BANK_TRANSFER', $payment->getMethod()?->getCode());
+        self::assertSame('new', $payment->getState());
+        self::assertSame('pending', PaymentDetails::of($payment)->getTransactionStatus($transactionId));
+        $capture = $this->paymentRequests(PaymentRequestInterface::ACTION_CAPTURE)[0];
+        self::assertSame(PaymentRequestInterface::STATE_CANCELLED, $capture->getState());
+        self::assertSame($captureResponse, $capture->getResponseData());
+        self::assertSame('pending', $this->tpay->transaction($transactionId)['status']);
     }
 
     private function switchToBankTransfer(PaymentInterface $payment): void

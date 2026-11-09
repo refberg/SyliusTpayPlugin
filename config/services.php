@@ -21,6 +21,7 @@ use Refberg\SyliusTpayPlugin\CommandHandler\StatusPaymentRequestHandler;
 use Refberg\SyliusTpayPlugin\CommandProvider\PaymentRequestCommandProvider;
 use Refberg\SyliusTpayPlugin\Config\CredentialsResolver;
 use Refberg\SyliusTpayPlugin\Config\CredentialsResolverInterface;
+use Refberg\SyliusTpayPlugin\EventListener\CaptureCancelledListener;
 use Refberg\SyliusTpayPlugin\EventListener\PaymentTransitionListener;
 use Refberg\SyliusTpayPlugin\Form\Type\TpayGatewayConfigurationType;
 use Refberg\SyliusTpayPlugin\Notification\NotificationParser;
@@ -50,6 +51,7 @@ use Refberg\SyliusTpayPlugin\TpayGateway;
 use Sylius\Bundle\PaymentBundle\CommandProvider\ActionsCommandProvider;
 use Sylius\Bundle\PaymentBundle\Provider\ActionsHttpResponseProvider;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
+use function in_array;
 
 return static function (ContainerConfigurator $container): void {
     $container->parameters()->set('refberg_tpay.http_timeout', 15.0);
@@ -93,7 +95,12 @@ return static function (ContainerConfigurator $container): void {
         ->args([service('doctrine.orm.entity_manager')]);
 
     $services->set(PaymentStateApplierInterface::class, PaymentStateApplier::class)
-        ->args([service('sylius_abstraction.state_machine'), service('logger')->ignoreOnInvalid()])
+        ->args([
+            service('sylius_abstraction.state_machine'),
+            service('logger')->ignoreOnInvalid(),
+            service(CredentialsResolverInterface::class),
+            service('sylius.repository.payment_request'),
+        ])
         ->tag('monolog.logger', ['channel' => 'tpay']);
 
     $services->set(PaymentSynchronizerInterface::class, PaymentSynchronizer::class)
@@ -156,6 +163,7 @@ return static function (ContainerConfigurator $container): void {
             service(PaymentSynchronizerInterface::class),
         ],
     ];
+    $closingCaptureRequests = [StatusPaymentRequestHandler::class, NotifyPaymentRequestHandler::class];
     foreach ($handlers as $handlerClass => $arguments) {
         $services->set($handlerClass)
             ->args([
@@ -164,6 +172,7 @@ return static function (ContainerConfigurator $container): void {
                 service(PaymentLockerInterface::class),
                 service('sylius_abstraction.state_machine'),
                 service('logger')->ignoreOnInvalid(),
+                ...(in_array($handlerClass, $closingCaptureRequests, true) ? [service('sylius.repository.payment_request')] : []),
             ])
             ->tag('messenger.message_handler', ['bus' => 'sylius.payment_request.command_bus'])
             ->tag('monolog.logger', ['channel' => 'tpay']);
@@ -208,4 +217,14 @@ return static function (ContainerConfigurator $container): void {
             ])
             ->tag('kernel.event_listener', ['event' => 'workflow.sylius_payment.completed.' . $transition]);
     }
+
+    // Payment method changes
+    $services->set('refberg_tpay.listener.capture_cancelled', CaptureCancelledListener::class)
+        ->args([
+            service(CredentialsResolverInterface::class),
+            service(TpayClientInterface::class),
+            service('logger')->ignoreOnInvalid(),
+        ])
+        ->tag('kernel.event_listener', ['event' => 'workflow.sylius_payment_request.completed.cancel'])
+        ->tag('monolog.logger', ['channel' => 'tpay']);
 };

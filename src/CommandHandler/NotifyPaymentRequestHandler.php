@@ -18,6 +18,8 @@ use Refberg\SyliusTpayPlugin\Payment\PaymentStateApplierInterface;
 use Refberg\SyliusTpayPlugin\Payment\PaymentSynchronizerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
+use Sylius\Component\Payment\Model\PaymentRequestInterface;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 
 /**
  * Handles a Tpay notification stored by Sylius' notify endpoint.
@@ -36,6 +38,9 @@ final readonly class NotifyPaymentRequestHandler
 {
     use PaymentRequestHandlerTrait;
 
+    /**
+     * @param PaymentRequestRepositoryInterface<PaymentRequestInterface>|null $paymentRequestRepository
+     */
     public function __construct(
         private PaymentRequestProviderInterface $paymentRequestProvider,
         private CredentialsResolverInterface $credentialsResolver,
@@ -44,6 +49,7 @@ final readonly class NotifyPaymentRequestHandler
         private PaymentLockerInterface $paymentLocker,
         private StateMachineInterface $stateMachine,
         private LoggerInterface $logger = new NullLogger(),
+        private ?PaymentRequestRepositoryInterface $paymentRequestRepository = null,
     ) {
     }
 
@@ -100,6 +106,7 @@ final readonly class NotifyPaymentRequestHandler
         if (PaymentStateApplierInterface::RESULT_COMPLETED === $result) {
             $this->restorePaidMethod($payment, $method, $transactionId);
         }
+        $this->closeCaptureRequests($this->paymentRequestRepository, $payment, $transactionId);
 
         $this->completeRequest($paymentRequest, [
             'type' => $notification->type,

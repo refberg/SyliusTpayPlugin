@@ -115,7 +115,7 @@ final readonly class TpayClient implements TpayClientInterface
             throw $this->apiError('Canceling Tpay transaction failed', $statusCode, $data);
         }
 
-        $this->logger->info('Tpay transaction canceled.', ['tpay_transaction_id' => $transactionId]);
+        $this->logger->info('Tpay transaction cancellation requested.', ['tpay_transaction_id' => $transactionId]);
     }
 
     public function createRefund(TpayCredentials $credentials, string $transactionId, ?int $amount): array

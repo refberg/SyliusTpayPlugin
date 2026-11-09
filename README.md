@@ -205,6 +205,8 @@ $paymentMethodRepository->add($paymentMethod);
    the transaction read from the Tpay API.
 
 Opening the pay page again reuses the Tpay transaction that is still in progress, instead of creating a new one.
+Once the notification or the status check finds that Tpay transaction paid (also when already refunded) or canceled, its capture payment request
+is completed or failed, so **Pay** creates a new Tpay transaction instead of sending the customer to a finished one.
 
 ### API
 
@@ -244,15 +246,39 @@ Content-Type: application/ld+json
 | `pending`               | unchanged (`new`)                                                               |
 | `paid`, `correct`       | `completed`, once                                                               |
 | `refund` (full refund)  | `refunded`, when this transaction completed the payment                         |
-| `canceled`              | `failed`, only when no other Tpay transaction of this payment is still pending  |
+| `canceled`              | `failed`, only when no other Tpay transaction of this payment is still pending and the payment still uses a Tpay method; never when the capture request of this transaction was cancelled (method switch) |
 
 A payment that is completed is never moved back. If a second Tpay transaction of the same payment is paid
 (for example after the customer retried in another tab), the Sylius order is not paid twice. The plugin
-records a warning in the payment details (`refberg_tpay.warnings`) and logs an error on the `tpay` channel.
-Refund that transaction manually in the Tpay panel.
+records a warning in the payment details (`refberg_tpay.warnings`) and logs a critical message on the `tpay` channel.
+The same applies to a Tpay transaction paid after the payment failed or was cancelled in Sylius
+(`payment_completed_after_failure` warning). Refund such a transaction manually in the Tpay panel.
+
+When the customer switches to another payment method while the Tpay transaction is still `pending`, Sylius cancels
+the capture payment request and the plugin asks Tpay to cancel that transaction (`POST /transactions/{transactionId}/cancel`).
+The answer is only logged: the plugin runs this inside the Doctrine flush of the method change and writes nothing there,
+so the transaction status changes only with a notification or a status check. A `canceled` transaction does not fail
+a payment that now uses another method, also another Tpay method or the same Tpay method after switching back,
+because the capture request of that transaction was cancelled at the switch.
+
+Tpay has one status, `pending`, for a transaction that was just created and for one the customer is paying
+(for example a bank transfer not booked yet), so the plugin does not block the method switch. According to the
+[Tpay documentation](https://docs-api.tpay.com/transaction-cancellation/), only `pending` transactions can be cancelled,
+the payer cannot pay a cancelled transaction, and if a payment goes through anyway, Tpay refunds it to the payer automatically.
+That gives two cases:
+
+- The payment is already booked in Tpay: Tpay refuses the cancellation, and the payment is completed by the notification.
+  A refusal (HTTP 4xx other than 401, 403, 408 and 429; the tests assume 409) does not prove a payment: the transaction
+  may also be already canceled or expired (Tpay cancels unpaid transactions after 30 days), and HTTP 404 can also mean
+  a transaction of another Tpay account. Every refusal is logged as critical; check the transaction in the Tpay panel.
+- A bank transfer is still on its way: the cancellation succeeds, and Tpay returns the funds to the payer.
+
+If the customer pays both the Tpay transaction and the new method, the Tpay one gets the `payment_completed_after_failure` or `paid_with_previous_payment_method` warning
+(see above); refund the extra payment manually.
 
 If the customer switches the order to another payment method after being redirected to Tpay, the Tpay transaction
-created before the switch stays linked to the payment and can still be paid. The payment is completed by its notification
+created before the switch stays linked to the payment. It can still be paid only if it was not cancelled: it was
+not `pending` locally at the switch (so the plugin did not ask Tpay to cancel it) or Tpay did not cancel it. The payment is completed by its notification
 or by a status check (the customer's return from Tpay or the `status` payment request through the API) once
 the Tpay API confirms the transaction is paid; the plugin sets the payment method back to the Tpay method that was paid,
 records the `paid_with_previous_payment_method` warning and logs a warning. Refunds of that payment from Sylius
@@ -263,7 +289,8 @@ reach that transaction:
 
 - Another Tpay method: the cancellation is sent with the new method's credentials. For a transaction of another
   merchant Tpay is expected to refuse it; the payment request then fails and an error is logged.
-- A method outside Tpay: the cancellation is not sent to Tpay. The old transaction stays pending; if the customer pays it,
+- A method outside Tpay: the cancellation is not sent to Tpay. The old transaction stays pending unless it was cancelled
+  at the method switch (see above); if the customer pays it,
   the payment stays cancelled and gets the `payment_completed_after_failure` warning.
 
 In both cases refund or cancel the transaction in the Tpay panel.
@@ -354,7 +381,7 @@ They are covered by tests against `tests/Support/FakeTpay.php`, which implements
 | `GET /transactions/{transactionId}` takes the transaction ID returned on creation; notifications name the transaction by its title (`tr_id`). | `TpayClient`, `NotifyPaymentRequestHandler` |
 | A refund status other than `done`, `authorized`, `blik_processed` (finalized) or `cancel`, `declined` (canceled) means the refund is in progress. Refunds listed without a status (no bank account, cards) are in progress. | `TpayRefund`, `TpayClient` |
 | `tr_status` is `TRUE` (or `PAID`) for a payment and `CHARGEBACK` for a full refund; partial refunds send no notification. | `NotificationParser` |
-| After the customer switches the payment method in Sylius, the old Tpay transaction still accepts a payment. | `ShopPaymentFlowTest` |
+| After the customer switches the payment method in Sylius, the old Tpay transaction still accepts a payment unless it is cancelled. `POST /transactions/{transactionId}/cancel` cancels only a `pending` transaction and refuses a paid one (the tests assume HTTP 409). A cancelled transaction cannot be paid, and a payment that goes through anyway is refunded to the payer by Tpay. Not checked on the sandbox. | `ShopPaymentFlowTest`, `CaptureCancelledListener`, `FakeTpay` |
 | A transaction in another currency than PLN is rejected without a multi-currency agreement. | `FakeTpay` |
 
 ## Extending

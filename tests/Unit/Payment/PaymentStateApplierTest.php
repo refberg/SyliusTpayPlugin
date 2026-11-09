@@ -7,14 +7,24 @@ namespace Tests\Refberg\SyliusTpayPlugin\Unit\Payment;
 use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Refberg\SyliusTpayPlugin\Api\Model\TpayTransaction;
+use Refberg\SyliusTpayPlugin\Config\CredentialsResolver;
 use Refberg\SyliusTpayPlugin\Payment\PaymentDetails;
 use Refberg\SyliusTpayPlugin\Payment\PaymentStateApplier;
 use Refberg\SyliusTpayPlugin\Payment\PaymentStateApplierInterface;
+use Refberg\SyliusTpayPlugin\TpayGateway;
+use Sylius\Bundle\PayumBundle\Model\GatewayConfig;
 use Sylius\Component\Core\Model\PaymentInterface;
+use Sylius\Component\Core\Model\PaymentMethod;
+use Sylius\Component\Payment\Model\PaymentRequest;
+use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\PaymentTransitions;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 use Tests\Refberg\SyliusTpayPlugin\Support\MemoryLogger;
 use Tests\Refberg\SyliusTpayPlugin\Support\Payments;
 use Tests\Refberg\SyliusTpayPlugin\Support\PaymentStateMachine;
+use function array_filter;
+use function array_values;
+use function in_array;
 
 final class PaymentStateApplierTest extends TestCase
 {
@@ -51,7 +61,7 @@ final class PaymentStateApplierTest extends TestCase
 
         self::assertSame([['type' => PaymentDetails::WARNING_DUPLICATE_PAYMENT, 'transaction_id' => 'T2']], PaymentDetails::of($payment)->warnings());
         self::assertSame([PaymentTransitions::TRANSITION_COMPLETE], $this->stateMachine->appliedTransitions(PaymentTransitions::GRAPH));
-        self::assertSame('error', $this->logger->records[1]['level'] ?? null);
+        self::assertSame('critical', $this->logger->records[1]['level'] ?? null);
     }
 
     public function test_paid_transaction_of_a_failed_or_cancelled_payment_is_a_late_payment_warning(): void
@@ -80,6 +90,64 @@ final class PaymentStateApplierTest extends TestCase
         self::assertSame('new', $payment->getState());
 
         self::assertSame(PaymentStateApplierInterface::RESULT_FAILED, $this->applier()->apply($payment, self::transaction('T2', 'canceled')));
+        self::assertSame('failed', $payment->getState());
+    }
+
+    public function test_canceled_transaction_does_not_fail_a_payment_switched_to_another_payment_method(): void
+    {
+        $applier = new PaymentStateApplier($this->stateMachine, credentialsResolver: new CredentialsResolver());
+        $payment = self::payment(['T1']);
+        $payment->setMethod(self::method('BANK_TRANSFER', 'offline'));
+
+        self::assertSame(PaymentStateApplierInterface::RESULT_UNCHANGED, $applier->apply($payment, self::transaction('T1', 'canceled')));
+        self::assertSame('new', $payment->getState());
+        self::assertSame('canceled', PaymentDetails::of($payment)->getTransactionStatus('T1'));
+    }
+
+    public function test_canceled_transaction_of_a_cancelled_capture_request_does_not_fail_the_payment(): void
+    {
+        $payment = self::payment(['T1']);
+        $method = self::method('TPAY', TpayGateway::FACTORY_NAME);
+        $payment->setMethod($method);
+        $applier = new PaymentStateApplier($this->stateMachine, paymentRequestRepository: self::paymentRequests([
+            self::request($payment, $method, PaymentRequestInterface::ACTION_CAPTURE, PaymentRequestInterface::STATE_CANCELLED, 'T1'),
+        ]));
+
+        self::assertSame(PaymentStateApplierInterface::RESULT_UNCHANGED, $applier->apply($payment, self::transaction('T1', 'canceled')));
+        self::assertSame('new', $payment->getState());
+    }
+
+    public function test_canceled_transaction_fails_the_payment_when_no_capture_request_of_it_was_cancelled(): void
+    {
+        $payment = self::payment(['T1']);
+        $method = self::method('TPAY', TpayGateway::FACTORY_NAME);
+        $payment->setMethod($method);
+        $applier = new PaymentStateApplier($this->stateMachine, paymentRequestRepository: self::paymentRequests([
+            self::request($payment, $method, PaymentRequestInterface::ACTION_CAPTURE, PaymentRequestInterface::STATE_CANCELLED, 'T2'),
+            self::request($payment, $method, PaymentRequestInterface::ACTION_CAPTURE, PaymentRequestInterface::STATE_FAILED, 'T1'),
+            self::request($payment, $method, PaymentRequestInterface::ACTION_STATUS, PaymentRequestInterface::STATE_CANCELLED, 'T1'),
+        ]));
+
+        self::assertSame(PaymentStateApplierInterface::RESULT_FAILED, $applier->apply($payment, self::transaction('T1', 'canceled')));
+        self::assertSame('failed', $payment->getState());
+    }
+
+    public function test_canceled_transaction_fails_a_switched_payment_when_no_credentials_resolver_is_given(): void
+    {
+        $payment = self::payment(['T1']);
+        $payment->setMethod(self::method('BANK_TRANSFER', 'offline'));
+
+        self::assertSame(PaymentStateApplierInterface::RESULT_FAILED, $this->applier()->apply($payment, self::transaction('T1', 'canceled')));
+        self::assertSame('failed', $payment->getState());
+    }
+
+    public function test_canceled_transaction_fails_a_payment_that_still_uses_a_tpay_method(): void
+    {
+        $applier = new PaymentStateApplier($this->stateMachine, credentialsResolver: new CredentialsResolver());
+        $payment = self::payment(['T1']);
+        $payment->setMethod(self::method('TPAY', TpayGateway::FACTORY_NAME));
+
+        self::assertSame(PaymentStateApplierInterface::RESULT_FAILED, $applier->apply($payment, self::transaction('T1', 'canceled')));
         self::assertSame('failed', $payment->getState());
     }
 
@@ -136,6 +204,43 @@ final class PaymentStateApplierTest extends TestCase
         $details->save();
 
         return $payment;
+    }
+
+    /**
+     * @param list<PaymentRequestInterface> $requests
+     *
+     * @return PaymentRequestRepositoryInterface<PaymentRequestInterface>
+     */
+    private static function paymentRequests(array $requests): PaymentRequestRepositoryInterface
+    {
+        $repository = self::createStub(PaymentRequestRepositoryInterface::class);
+        $repository->method('findByPaymentIdAndStates')->willReturnCallback(
+            static fn (mixed $paymentId, array $states): array => array_values(array_filter($requests, static fn (PaymentRequestInterface $request): bool => in_array($request->getState(), $states, true))),
+        );
+
+        return $repository;
+    }
+
+    private static function request(PaymentInterface $payment, PaymentMethod $method, string $action, string $state, string $transactionId): PaymentRequestInterface
+    {
+        $request = new PaymentRequest($payment, $method);
+        $request->setAction($action);
+        $request->setState($state);
+        $request->setResponseData(['transaction_id' => $transactionId]);
+
+        return $request;
+    }
+
+    private static function method(string $code, string $factoryName): PaymentMethod
+    {
+        $gatewayConfig = new GatewayConfig();
+        $gatewayConfig->setFactoryName($factoryName);
+
+        $method = new PaymentMethod();
+        $method->setCode($code);
+        $method->setGatewayConfig($gatewayConfig);
+
+        return $method;
     }
 
     private static function transaction(string $transactionId, string $status): TpayTransaction
