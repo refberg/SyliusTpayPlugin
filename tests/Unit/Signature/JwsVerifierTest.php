@@ -17,6 +17,7 @@ use Tests\Refberg\SyliusTpayPlugin\Support\FakeTpay;
 use function base64_encode;
 use function explode;
 use function json_encode;
+use function openssl_x509_verify;
 use function rtrim;
 use function strtr;
 use const JSON_THROW_ON_ERROR;
@@ -126,6 +127,7 @@ final class JwsVerifierTest extends TestCase
     public function test_expired_certificate_is_rejected(): void
     {
         $expired = FakeTpay::expiredCertificate();
+        self::assertSame(1, openssl_x509_verify($expired['certificate'], FakeTpay::rootCertificatePem()));
         $certificates = self::createStub(CertificateProviderInterface::class);
         $certificates->method('get')->willReturnCallback(static fn (string $url): string => FakeTpay::ROOT_CERTIFICATE_URL === $url ? FakeTpay::rootCertificatePem() : $expired['certificate']);
 
