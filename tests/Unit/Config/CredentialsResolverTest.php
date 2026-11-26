@@ -67,7 +67,7 @@ final class CredentialsResolverTest extends TestCase
         self::assertStringNotContainsString('code', $dump);
 
         $this->expectException(LogicException::class);
-        serialize($credentials);
+        self::fail('Credentials must not be serializable: ' . serialize($credentials));
     }
 
     /**
