@@ -350,6 +350,29 @@ final class FakeTpay
         return ['certificate' => $certificatePem, 'key' => $key];
     }
 
+    /**
+     * A valid self-signed certificate that the test root CA did not issue, with its key.
+     *
+     * @return array{certificate: string, key: OpenSSLAsymmetricKey}
+     */
+    public static function selfSignedCertificate(): array
+    {
+        $key = self::foreignKey();
+        $keyReference = $key;
+        $csr = openssl_csr_new(['commonName' => 'Fake Tpay self-signed notifications'], $keyReference);
+        if (false === $csr || true === $csr) {
+            throw new LogicException('Could not create the self-signed certificate request.');
+        }
+
+        $certificate = openssl_csr_sign($csr, null, $key, 1, [], 4);
+        if (false === $certificate) {
+            throw new LogicException('Could not sign the self-signed certificate.');
+        }
+        openssl_x509_export($certificate, $certificatePem);
+
+        return ['certificate' => self::str($certificatePem), 'key' => $key];
+    }
+
     public static function certificatePem(): string
     {
         return self::pki()['certificate'];
