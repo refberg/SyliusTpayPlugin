@@ -113,6 +113,32 @@ final class StatusPaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentInterface::STATE_NEW, $payment->getState());
     }
 
+    public function test_three_newest_open_transactions_are_checked_and_only_a_completed_one_restores_the_paid_method(): void
+    {
+        $method = self::tpayMethod();
+        $payment = self::payment($method, ['T1', 'T2', 'T3', 'T4']);
+        $otherMethod = new PaymentMethod();
+        $otherMethod->setCode('BANK_TRANSFER');
+        $payment->setMethod($otherMethod);
+        $statusRequest = self::request($payment, $method, PaymentRequestInterface::ACTION_STATUS, PaymentRequestInterface::STATE_NEW, null);
+        $checked = [];
+        $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
+        $synchronizer->method('synchronize')->willReturnCallback(static function (PaymentInterface $synchronized, string $transactionId) use (&$checked): string {
+            $checked[] = $transactionId;
+
+            return 'T3' === $transactionId ? PaymentStateApplierInterface::RESULT_COMPLETED : PaymentStateApplierInterface::RESULT_UNCHANGED;
+        });
+        $locker = $this->createMock(PaymentLockerInterface::class);
+        $locker->expects(self::once())->method('lock')->with($payment);
+
+        $this->invoke($statusRequest, [$statusRequest], $synchronizer, locker: $locker);
+
+        self::assertSame(['T4', 'T3', 'T2'], $checked);
+        self::assertSame($method, $payment->getMethod());
+        self::assertSame([['type' => PaymentDetails::WARNING_PAYMENT_METHOD_CHANGED, 'transaction_id' => 'T3']], PaymentDetails::of($payment)->warnings());
+        self::assertSame(['payment_state' => PaymentInterface::STATE_NEW, 'transaction_id' => 'T4', 'tpay_status' => 'pending'], $statusRequest->getResponseData());
+    }
+
     /**
      * @param list<PaymentRequestInterface> $requests
      */
@@ -133,7 +159,7 @@ final class StatusPaymentRequestHandlerTest extends TestCase
     /**
      * @param list<PaymentRequestInterface> $requests
      */
-    private function invoke(PaymentRequestInterface $statusRequest, array $requests, PaymentSynchronizerInterface $synchronizer, MemoryLogger $logger = new MemoryLogger()): void
+    private function invoke(PaymentRequestInterface $statusRequest, array $requests, PaymentSynchronizerInterface $synchronizer, MemoryLogger $logger = new MemoryLogger(), ?PaymentLockerInterface $locker = null): void
     {
         $paymentRequestProvider = self::createStub(PaymentRequestProviderInterface::class);
         $paymentRequestProvider->method('provide')->willReturn($statusRequest);
@@ -147,7 +173,7 @@ final class StatusPaymentRequestHandlerTest extends TestCase
             $paymentRequestProvider,
             new CredentialsResolver(),
             $synchronizer,
-            self::createStub(PaymentLockerInterface::class),
+            $locker ?? self::createStub(PaymentLockerInterface::class),
             new PaymentStateMachine(),
             $logger,
             $paymentRequestRepository,

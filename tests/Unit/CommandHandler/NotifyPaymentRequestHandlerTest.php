@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Refberg\SyliusTpayPlugin\Unit\CommandHandler;
 
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Refberg\SyliusTpayPlugin\Command\NotifyPaymentRequest;
 use Refberg\SyliusTpayPlugin\CommandHandler\NotifyPaymentRequestHandler;
@@ -17,9 +18,11 @@ use Refberg\SyliusTpayPlugin\Payment\PaymentSynchronizerInterface;
 use Refberg\SyliusTpayPlugin\TpayGateway;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
 use Sylius\Bundle\PayumBundle\Model\GatewayConfig;
+use Sylius\Component\Core\Model\PaymentInterface;
 use Sylius\Component\Core\Model\PaymentMethod;
 use Sylius\Component\Payment\Model\PaymentRequest;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 use Tests\Refberg\SyliusTpayPlugin\Support\FakeTpay;
 use Tests\Refberg\SyliusTpayPlugin\Support\Payments;
 use Tests\Refberg\SyliusTpayPlugin\Support\PaymentStateMachine;
@@ -98,6 +101,80 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $paymentRequest->getState());
     }
 
+    #[TestWith([PaymentStateApplierInterface::RESULT_COMPLETED, true])]
+    #[TestWith([PaymentStateApplierInterface::RESULT_UNCHANGED, false])]
+    public function test_only_a_completed_payment_restores_the_paid_method(string $result, bool $restored): void
+    {
+        $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
+        $synchronizer->method('synchronize')->willReturn($result);
+        $locker = $this->createMock(PaymentLockerInterface::class);
+        $locker->expects(self::once())->method('lock');
+        [$handler, $paymentRequest] = $this->handler($synchronizer, self::parserReturning(self::notification(Notification::TYPE_PAYMENT, 'TR-T1')), locker: $locker);
+        $payment = $paymentRequest->getPayment();
+        $otherMethod = new PaymentMethod();
+        $otherMethod->setCode('BANK_TRANSFER');
+        $payment->setMethod($otherMethod);
+
+        $handler(new NotifyPaymentRequest('3f2504e0-4f89-11d3-9a0c-0305e82c3301'));
+
+        self::assertSame($restored ? $paymentRequest->getMethod() : $otherMethod, $payment->getMethod());
+        self::assertSame([
+            'type' => Notification::TYPE_PAYMENT,
+            'transaction_id' => 'T1',
+            'title' => 'TR-T1',
+            'result' => $result,
+            'payment_state' => PaymentInterface::STATE_NEW,
+        ], $paymentRequest->getResponseData());
+    }
+
+    public function test_only_capture_requests_of_the_notified_transaction_are_closed(): void
+    {
+        $synchronizer = self::createStub(PaymentSynchronizerInterface::class);
+        $synchronizer->method('synchronize')->willReturnCallback(static function (PaymentInterface $payment, string $transactionId): string {
+            $details = PaymentDetails::of($payment);
+            $details->recordTransactionStatus($transactionId, 'correct');
+            $details->save();
+
+            return PaymentStateApplierInterface::RESULT_UNCHANGED;
+        });
+        $requests = [];
+        $repository = self::createStub(PaymentRequestRepositoryInterface::class);
+        $repository->method('findByPaymentIdAndStates')->willReturnCallback(static function () use (&$requests): array {
+            return $requests;
+        });
+        [$handler, $paymentRequest] = $this->handler($synchronizer, self::parserReturning(self::notification(Notification::TYPE_PAYMENT, 'TR-T1')), paymentRequestRepository: $repository);
+        $payment = $paymentRequest->getPayment();
+        self::assertInstanceOf(PaymentInterface::class, $payment);
+        $details = PaymentDetails::of($payment);
+        $details->addTransaction('T2', 'TR-T2', 'ext-T2', FakeTpay::MERCHANT_ID, 1500, 'PLN');
+        $details->recordTransactionStatus('T2', 'canceled');
+        $details->save();
+        $capture = self::processingRequest($paymentRequest, PaymentRequestInterface::ACTION_CAPTURE, 'T1');
+        $otherTransactionCapture = self::processingRequest($paymentRequest, PaymentRequestInterface::ACTION_CAPTURE, 'T2');
+        $captureWithoutTransaction = self::processingRequest($paymentRequest, PaymentRequestInterface::ACTION_CAPTURE, null);
+        $refund = self::processingRequest($paymentRequest, PaymentRequestInterface::ACTION_REFUND, 'T1');
+        $requests = [$otherTransactionCapture, $captureWithoutTransaction, $refund, $capture];
+
+        $handler(new NotifyPaymentRequest('3f2504e0-4f89-11d3-9a0c-0305e82c3301'));
+
+        self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $capture->getState());
+        self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $otherTransactionCapture->getState());
+        self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $captureWithoutTransaction->getState());
+        self::assertSame(PaymentRequestInterface::STATE_PROCESSING, $refund->getState());
+    }
+
+    private static function processingRequest(PaymentRequestInterface $notifyRequest, string $action, ?string $transactionId): PaymentRequestInterface
+    {
+        $request = new PaymentRequest($notifyRequest->getPayment(), $notifyRequest->getMethod());
+        $request->setAction($action);
+        $request->setState(PaymentRequestInterface::STATE_PROCESSING);
+        if (null !== $transactionId) {
+            $request->setResponseData(['transaction_id' => $transactionId]);
+        }
+
+        return $request;
+    }
+
     private static function parserReturning(?Notification $notification): NotificationParserInterface
     {
         $parser = self::createStub(NotificationParserInterface::class);
@@ -113,6 +190,7 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
 
     /**
      * @param array<string, string>|null $config
+     * @param PaymentRequestRepositoryInterface<PaymentRequestInterface>|null $paymentRequestRepository
      *
      * @return array{NotifyPaymentRequestHandler, PaymentRequestInterface}
      */
@@ -121,6 +199,7 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         NotificationParserInterface $parser,
         ?array $config = null,
         ?PaymentLockerInterface $locker = null,
+        ?PaymentRequestRepositoryInterface $paymentRequestRepository = null,
     ): array {
         $gatewayConfig = new GatewayConfig();
         $gatewayConfig->setFactoryName(TpayGateway::FACTORY_NAME);
@@ -155,6 +234,7 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
             $synchronizer,
             $locker ?? self::createStub(PaymentLockerInterface::class),
             new PaymentStateMachine(),
+            paymentRequestRepository: $paymentRequestRepository,
         );
 
         return [$handler, $paymentRequest];

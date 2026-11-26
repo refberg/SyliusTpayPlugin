@@ -35,6 +35,7 @@ use function openssl_csr_sign;
 use function openssl_pkey_new;
 use function openssl_sign;
 use function openssl_x509_export;
+use function openssl_x509_parse;
 use function parse_url;
 use function preg_match;
 use function rawurldecode;
@@ -46,7 +47,9 @@ use function str_starts_with;
 use function strtolower;
 use function strtr;
 use function substr;
+use function time;
 use function trim;
+use function usleep;
 use const JSON_THROW_ON_ERROR;
 use const JSON_UNESCAPED_SLASHES;
 use const OPENSSL_ALGO_SHA256;
@@ -77,7 +80,7 @@ final class FakeTpay
 
     public const ROOT_CERTIFICATE_URL = 'https://' . self::SECURE_HOST . '/x509/tpay-jws-root.pem';
 
-    /** @var array{root: string, certificate: string, key: OpenSSLAsymmetricKey}|null */
+    /** @var array{root: string, certificate: string, key: OpenSSLAsymmetricKey, rootKey: OpenSSLAsymmetricKey}|null */
     private static ?array $pki = null;
 
     /** @var array<string, array<string, mixed>> */
@@ -294,9 +297,9 @@ final class FakeTpay
     /**
      * Signs a body like Tpay: a detached RS256 JWS with the test certificate in "x5u".
      */
-    public static function jws(string $body, ?OpenSSLAsymmetricKey $key = null, string $certificateUrl = self::CERTIFICATE_URL): string
+    public static function jws(string $body, ?OpenSSLAsymmetricKey $key = null, string $certificateUrl = self::CERTIFICATE_URL, string $algorithm = 'RS256'): string
     {
-        $header = self::base64Url(json_encode(['alg' => 'RS256', 'x5u' => $certificateUrl], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        $header = self::base64Url(json_encode(['alg' => $algorithm, 'x5u' => $certificateUrl], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
         openssl_sign($header . '.' . self::base64Url($body), $signature, $key ?? self::pki()['key'], OPENSSL_ALGO_SHA256);
 
         return $header . '..' . self::base64Url(self::str($signature));
@@ -315,6 +318,38 @@ final class FakeTpay
         return $key;
     }
 
+    /**
+     * A certificate issued by the test root CA that has already expired, with its key.
+     *
+     * @return array{certificate: string, key: OpenSSLAsymmetricKey}
+     */
+    public static function expiredCertificate(): array
+    {
+        $key = self::foreignKey();
+        $keyReference = $key;
+        $csr = openssl_csr_new(['commonName' => 'Fake Tpay expired notifications'], $keyReference);
+        if (false === $csr || true === $csr) {
+            throw new LogicException('Could not create the expired certificate request.');
+        }
+
+        // openssl_csr_sign() rejects negative days, so the certificate is valid for 0 days and the test waits until that second has passed.
+        $certificate = openssl_csr_sign($csr, self::pki()['root'], self::pki()['rootKey'], 0, [], 3);
+        if (false === $certificate) {
+            throw new LogicException('Could not sign the expired certificate.');
+        }
+        openssl_x509_export($certificate, $certificatePem);
+        $certificatePem = self::str($certificatePem);
+        $validTo = openssl_x509_parse($certificatePem)['validTo_time_t'] ?? null;
+        if (!is_int($validTo)) {
+            throw new LogicException('Could not read the expired certificate.');
+        }
+        while (time() <= $validTo) {
+            usleep(50_000);
+        }
+
+        return ['certificate' => $certificatePem, 'key' => $key];
+    }
+
     public static function certificatePem(): string
     {
         return self::pki()['certificate'];
@@ -326,7 +361,7 @@ final class FakeTpay
     }
 
     /**
-     * @return array{root: string, certificate: string, key: OpenSSLAsymmetricKey}
+     * @return array{root: string, certificate: string, key: OpenSSLAsymmetricKey, rootKey: OpenSSLAsymmetricKey}
      */
     private static function pki(): array
     {
@@ -361,7 +396,7 @@ final class FakeTpay
         openssl_x509_export($root, $rootPem);
         openssl_x509_export($certificate, $certificatePem);
 
-        return self::$pki = ['root' => self::str($rootPem), 'certificate' => self::str($certificatePem), 'key' => $key];
+        return self::$pki = ['root' => self::str($rootPem), 'certificate' => self::str($certificatePem), 'key' => $key, 'rootKey' => $rootKey];
     }
 
     private function certificate(string $path): ResponseInterface
