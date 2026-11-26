@@ -16,6 +16,8 @@ use Refberg\SyliusTpayPlugin\Payment\PaymentStateApplierInterface;
 use Refberg\SyliusTpayPlugin\Payment\PaymentSynchronizerInterface;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Bundle\PaymentBundle\Provider\PaymentRequestProviderInterface;
+use Sylius\Component\Payment\Model\PaymentRequestInterface;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
 use function array_slice;
 
 /**
@@ -31,6 +33,9 @@ final readonly class StatusPaymentRequestHandler
 
     private const MAX_CHECKED_TRANSACTIONS = 3;
 
+    /**
+     * @param PaymentRequestRepositoryInterface<PaymentRequestInterface>|null $paymentRequestRepository
+     */
     public function __construct(
         private PaymentRequestProviderInterface $paymentRequestProvider,
         private CredentialsResolverInterface $credentialsResolver,
@@ -38,6 +43,7 @@ final readonly class StatusPaymentRequestHandler
         private PaymentLockerInterface $paymentLocker,
         private StateMachineInterface $stateMachine,
         private LoggerInterface $logger = new NullLogger(),
+        private ?PaymentRequestRepositoryInterface $paymentRequestRepository = null,
     ) {
     }
 
@@ -57,6 +63,7 @@ final readonly class StatusPaymentRequestHandler
                     $this->restorePaidMethod($payment, $method, $transactionId);
                 }
             }
+            $this->closeCaptureRequests($this->paymentRequestRepository, $payment);
         } catch (TpayException|InvalidConfigurationException $exception) {
             $this->logger->warning('Could not check Tpay transaction status.', [
                 'payment_id' => $payment->getId(),

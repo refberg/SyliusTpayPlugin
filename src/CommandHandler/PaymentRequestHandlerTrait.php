@@ -6,12 +6,16 @@ namespace Refberg\SyliusTpayPlugin\CommandHandler;
 
 use LogicException;
 use Psr\Log\LoggerInterface;
+use Refberg\SyliusTpayPlugin\Api\Model\TpayTransaction;
 use Refberg\SyliusTpayPlugin\Payment\PaymentDetails;
 use Sylius\Abstraction\StateMachine\StateMachineInterface;
 use Sylius\Component\Core\Model\PaymentInterface;
 use Sylius\Component\Payment\Model\PaymentMethodInterface;
 use Sylius\Component\Payment\Model\PaymentRequestInterface;
 use Sylius\Component\Payment\PaymentRequestTransitions;
+use Sylius\Component\Payment\Repository\PaymentRequestRepositoryInterface;
+use function in_array;
+use function is_string;
 
 /**
  * @internal
@@ -40,6 +44,41 @@ trait PaymentRequestHandlerTrait
     {
         if ($this->stateMachine->can($paymentRequest, PaymentRequestTransitions::GRAPH, $transition)) {
             $this->stateMachine->apply($paymentRequest, PaymentRequestTransitions::GRAPH, $transition);
+        }
+    }
+
+    /**
+     * Sylius reuses a capture request that is not final, so a finished Tpay transaction would send the customer back to a dead payment page.
+     *
+     * @param PaymentRequestRepositoryInterface<PaymentRequestInterface>|null $paymentRequestRepository
+     * @param string|null $transactionId null closes the capture requests of every Tpay transaction with a final status
+     */
+    private function closeCaptureRequests(?PaymentRequestRepositoryInterface $paymentRequestRepository, PaymentInterface $payment, ?string $transactionId = null): void
+    {
+        if (!$paymentRequestRepository instanceof PaymentRequestRepositoryInterface) {
+            return;
+        }
+
+        $details = PaymentDetails::of($payment);
+        foreach ($paymentRequestRepository->findByPaymentIdAndStates($payment->getId(), [PaymentRequestInterface::STATE_PROCESSING]) as $captureRequest) {
+            $captureTransactionId = $captureRequest->getResponseData()['transaction_id'] ?? null;
+            if (
+                !is_string($captureTransactionId) ||
+                (null !== $transactionId && $transactionId !== $captureTransactionId) ||
+                !in_array($captureRequest->getAction(), [PaymentRequestInterface::ACTION_CAPTURE, PaymentRequestInterface::ACTION_AUTHORIZE], true)
+            ) {
+                continue;
+            }
+
+            $status = $details->getTransactionStatus($captureTransactionId);
+            $transition = match (true) {
+                TpayTransaction::isPaidStatus($status), TpayTransaction::STATUS_REFUND === $status => PaymentRequestTransitions::TRANSITION_COMPLETE,
+                TpayTransaction::STATUS_CANCELED === $status => PaymentRequestTransitions::TRANSITION_FAIL,
+                default => null,
+            };
+            if (null !== $transition) {
+                $this->transitionRequest($captureRequest, $transition);
+            }
         }
     }
 
