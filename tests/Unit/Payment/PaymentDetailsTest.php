@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Refberg\SyliusTpayPlugin\Api\Model\TpayRefund;
 use Refberg\SyliusTpayPlugin\Payment\PaymentDetails;
 use Tests\Refberg\SyliusTpayPlugin\Support\Payments;
+use function array_keys;
 
 final class PaymentDetailsTest extends TestCase
 {
@@ -54,6 +55,22 @@ final class PaymentDetailsTest extends TestCase
         self::assertFalse($details->hasTransaction('missing'));
     }
 
+    public function test_status_outside_the_known_ones_is_ranked_lowest(): void
+    {
+        $payment = Payments::payment();
+        $payment->setDetails(['refberg_tpay' => ['transactions' => ['T1' => ['status' => 'pending'], 'T2' => ['status' => 'unknown']]]]);
+        $details = PaymentDetails::of($payment);
+
+        $details->recordTransactionStatus('T1', 'unknown');
+        self::assertSame('pending', $details->getTransactionStatus('T1'));
+
+        $details->recordTransactionStatus('T2', 'pending');
+        self::assertSame('unknown', $details->getTransactionStatus('T2'));
+
+        $details->recordTransactionStatus('T2', 'paid');
+        self::assertSame('paid', $details->getTransactionStatus('T2'));
+    }
+
     public function test_warnings_are_not_duplicated(): void
     {
         $details = PaymentDetails::of(Payments::payment());
@@ -83,6 +100,20 @@ final class PaymentDetailsTest extends TestCase
         self::assertTrue($refunds['tpay-rf_panel']['external']);
         self::assertSame(1500, $details->activeRefundAmount());
         self::assertSame(500, $details->finalizedRefundAmount());
+    }
+
+    public function test_refund_with_the_same_amount_but_another_tpay_id_is_recorded_separately(): void
+    {
+        $details = PaymentDetails::of(Payments::payment());
+        $details->recordRefund('hash', 1000, 'PLN');
+        $details->synchronizeRefunds([new TpayRefund('rf_1', 'new', 1000, 'PLN')]);
+
+        $details->synchronizeRefunds([new TpayRefund('rf_1', 'new', 1000, 'PLN'), new TpayRefund('rf_2', 'done', 1000, 'PLN')]);
+
+        $refunds = $details->refunds();
+        self::assertSame(['hash', 'tpay-rf_2'], array_keys($refunds));
+        self::assertSame('rf_1', $refunds['hash']['refund_id']);
+        self::assertTrue($refunds['tpay-rf_2']['external']);
     }
 
     public function test_refund_statuses_are_updated_until_final_and_cancellations_reported_once(): void

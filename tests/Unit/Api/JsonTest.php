@@ -41,6 +41,7 @@ final class JsonTest extends TestCase
     #[TestWith(['-1.05', -105])]
     #[TestWith([12.34, 1234])]
     #[TestWith([0.29, 29])]
+    #[TestWith([1.1, 110])]
     #[TestWith([15.0, 1500])]
     #[TestWith([15, 1500])]
     public function test_amounts_are_read_in_minor_units(mixed $value, int $expected): void

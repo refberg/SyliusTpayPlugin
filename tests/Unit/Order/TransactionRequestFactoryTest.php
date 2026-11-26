@@ -133,7 +133,9 @@ final class TransactionRequestFactoryTest extends TestCase
     private function factory(bool $withShop = true): TransactionRequestFactory
     {
         $urlGenerator = self::createStub(UrlGeneratorInterface::class);
-        $urlGenerator->method('generate')->willReturn('https://shop.example/payment-methods/TPAY');
+        $urlGenerator->method('generate')->willReturnMap([
+            ['sylius_payment_method_notify', ['code' => 'TPAY'], UrlGeneratorInterface::ABSOLUTE_URL, 'https://shop.example/payment-methods/TPAY'],
+        ]);
 
         $afterPay = null;
         if ($withShop) {

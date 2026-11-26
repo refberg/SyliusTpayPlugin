@@ -134,6 +134,16 @@ final class JwsVerifierTest extends TestCase
         self::assertFalse((new JwsVerifier($certificates))->verify(self::BODY, FakeTpay::jws(self::BODY, $expired['key']), Environment::Sandbox));
     }
 
+    public function test_certificate_not_issued_by_the_tpay_root_is_rejected(): void
+    {
+        $selfSigned = FakeTpay::selfSignedCertificate();
+        self::assertSame(1, openssl_x509_verify($selfSigned['certificate'], $selfSigned['certificate']));
+        $certificates = self::createStub(CertificateProviderInterface::class);
+        $certificates->method('get')->willReturnCallback(static fn (string $url): string => FakeTpay::ROOT_CERTIFICATE_URL === $url ? FakeTpay::rootCertificatePem() : $selfSigned['certificate']);
+
+        self::assertFalse((new JwsVerifier($certificates))->verify(self::BODY, FakeTpay::jws(self::BODY, $selfSigned['key']), Environment::Sandbox));
+    }
+
     public function test_empty_body_is_rejected(): void
     {
         self::assertFalse($this->verifier()->verify('', FakeTpay::jws(''), Environment::Sandbox));
