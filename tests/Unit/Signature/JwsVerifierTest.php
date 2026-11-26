@@ -98,6 +98,40 @@ final class JwsVerifierTest extends TestCase
         self::assertFalse($this->verifier()->verify(self::BODY, $header . '..' . $signature, Environment::Sandbox));
     }
 
+    public function test_algorithm_other_than_rs256_is_rejected_even_with_a_valid_signature(): void
+    {
+        self::assertFalse($this->verifier()->verify(self::BODY, FakeTpay::jws(self::BODY, algorithm: 'RS512'), Environment::Sandbox));
+    }
+
+    public function test_undecodable_signature_is_rejected(): void
+    {
+        [$header] = explode('.', FakeTpay::jws(self::BODY));
+
+        self::assertFalse($this->verifier()->verify(self::BODY, $header . '..!!!', Environment::Sandbox));
+    }
+
+    public function test_failed_verification_forgets_both_certificates(): void
+    {
+        $forgotten = [];
+        $certificates = $this->createMock(CertificateProviderInterface::class);
+        $certificates->method('get')->willReturnCallback(static fn (string $url): string => FakeTpay::ROOT_CERTIFICATE_URL === $url ? FakeTpay::rootCertificatePem() : FakeTpay::certificatePem());
+        $certificates->expects(self::exactly(2))->method('forget')->willReturnCallback(static function (string $url) use (&$forgotten): void {
+            $forgotten[] = $url;
+        });
+
+        self::assertFalse((new JwsVerifier($certificates))->verify(self::BODY, FakeTpay::jws(self::BODY, FakeTpay::foreignKey()), Environment::Sandbox));
+        self::assertSame([FakeTpay::CERTIFICATE_URL, FakeTpay::ROOT_CERTIFICATE_URL], $forgotten);
+    }
+
+    public function test_expired_certificate_is_rejected(): void
+    {
+        $expired = FakeTpay::expiredCertificate();
+        $certificates = self::createStub(CertificateProviderInterface::class);
+        $certificates->method('get')->willReturnCallback(static fn (string $url): string => FakeTpay::ROOT_CERTIFICATE_URL === $url ? FakeTpay::rootCertificatePem() : $expired['certificate']);
+
+        self::assertFalse((new JwsVerifier($certificates))->verify(self::BODY, FakeTpay::jws(self::BODY, $expired['key']), Environment::Sandbox));
+    }
+
     public function test_empty_body_is_rejected(): void
     {
         self::assertFalse($this->verifier()->verify('', FakeTpay::jws(''), Environment::Sandbox));
