@@ -86,6 +86,18 @@ final class NotifyPaymentRequestHandlerTest extends TestCase
         self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $paymentRequest->getState());
     }
 
+    public function test_payment_notification_does_not_synchronize_refunds(): void
+    {
+        $synchronizer = $this->createMock(PaymentSynchronizerInterface::class);
+        $synchronizer->expects(self::never())->method('synchronizeRefunds');
+        $synchronizer->expects(self::once())->method('synchronize')->willReturn(PaymentStateApplierInterface::RESULT_UNCHANGED);
+        [$handler, $paymentRequest] = $this->handler($synchronizer, self::parserReturning(self::notification(Notification::TYPE_PAYMENT, 'TR-T1')));
+
+        $handler(new NotifyPaymentRequest('3f2504e0-4f89-11d3-9a0c-0305e82c3301'));
+
+        self::assertSame(PaymentRequestInterface::STATE_COMPLETED, $paymentRequest->getState());
+    }
+
     private static function parserReturning(?Notification $notification): NotificationParserInterface
     {
         $parser = self::createStub(NotificationParserInterface::class);
